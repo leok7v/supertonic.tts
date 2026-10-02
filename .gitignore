@@ -1,0 +1,4 @@
+/tts
+/tts-swift
+*.safetensors
+*.wav
