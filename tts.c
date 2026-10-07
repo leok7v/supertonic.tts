@@ -545,9 +545,23 @@ static bool chunk_paragraph(const struct chunks * c, int32_t from,
     return lines >= 2;
 }
 
+static bool chunk_is_tag(const struct chunks * c, int32_t at) {
+    static const char * const tags[] = {
+        "<laugh>", "<breath>", "<surprise>", "<sigh>", "<scream>",
+        "<throatclear>", "<sad>", "<angry>", "<cough>", "<yawn>" };
+    const int32_t    count = (int32_t)(sizeof(tags) / sizeof(tags[0]));
+    const uint32_t * cp    = c->raw + at;
+    const int32_t    left  = c->count - at;
+    int32_t          i     = 0;
+    while (i < count && !text_starts(cp, left, tags[i])) { i++; }
+    const int32_t size = i < count ? (int32_t)strlen(tags[i]) : 0;
+    return i < count && (size == left || text_is_space(cp[size]));
+}
+
 static int32_t chunk_sentence(const struct chunks * c, int32_t at) {
     static const uint32_t stops[] = { '.', '!', '?' };
     const uint32_t *      cp      = c->raw;
+    const bool            tag     = chunk_is_tag(c, at);
     int32_t               end     = at;
     int32_t               next    = at;
     do {
@@ -555,17 +569,20 @@ static int32_t chunk_sentence(const struct chunks * c, int32_t at) {
         while (end < c->count && !text_is_space(cp[end])) { end++; }
         next = end + text_spaces(cp + end, c->count - end);
     } while (next < c->count && !chunk_paragraph(c, end, next) &&
-             (!text_among(cp[end - 1], stops, 3) ||
+             chunk_is_tag(c, next) == tag &&
+             (tag || !text_among(cp[end - 1], stops, 3) ||
               chunk_abbreviated(c, end)));
     return end;
 }
 
 static bool chunk_next(struct chunks * c) {
-    int32_t from = c->at;
-    int32_t end  = chunk_sentence(c, c->at);
+    const bool alone = chunk_is_tag(c, c->at);
+    int32_t    from  = c->at;
+    int32_t    end   = chunk_sentence(c, c->at);
     c->length = 0;
     while (c->at < c->count &&
-           (c->length == 0 || (!chunk_paragraph(c, from, c->at) &&
+           (c->length == 0 || (!alone && !chunk_is_tag(c, c->at) &&
+                               !chunk_paragraph(c, from, c->at) &&
                                c->length + end - c->at + 1 <= c->limit))) {
         const int32_t size = end - c->at;
         if (c->length > 0) { c->cp[c->length++] = ' '; }

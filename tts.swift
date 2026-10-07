@@ -573,9 +573,23 @@ func chunkParagraph(_ c: Chunks, _ from: Int, _ to: Int) -> Bool {
     return lines >= 2
 }
 
+func chunkIsTag(_ c: Chunks, _ at: Int) -> Bool {
+    let tags = ["<laugh>", "<breath>", "<surprise>", "<sigh>", "<scream>",
+                "<throatclear>", "<sad>", "<angry>", "<cough>", "<yawn>"]
+    let cp   = UnsafePointer(c.raw) + at
+    let left = c.count - at
+    var i    = 0
+    while i < tags.count && !textStarts(cp, left, Array(tags[i].utf8)) {
+        i += 1
+    }
+    let size = i < tags.count ? tags[i].utf8.count : 0
+    return i < tags.count && (size == left || textIsSpace(cp[size]))
+}
+
 func chunkSentence(_ c: Chunks, _ at: Int) -> Int {
     let stops: [Unicode.Scalar] = [".", "!", "?"]
     let cp   = UnsafePointer(c.raw)
+    let tag  = chunkIsTag(c, at)
     var end  = at
     var next = at
     repeat {
@@ -583,16 +597,20 @@ func chunkSentence(_ c: Chunks, _ at: Int) -> Int {
         while end < c.count && !textIsSpace(cp[end]) { end += 1 }
         next = end + textSpaces(cp + end, c.count - end)
     } while next < c.count && !chunkParagraph(c, end, next) &&
-            (!textAmong(cp[end - 1], stops) || chunkAbbreviated(c, end))
+            chunkIsTag(c, next) == tag &&
+            (tag || !textAmong(cp[end - 1], stops) ||
+             chunkAbbreviated(c, end))
     return end
 }
 
 func chunkNext(_ c: inout Chunks) -> Bool {
-    var from = c.at
-    var end  = chunkSentence(c, c.at)
+    let alone = chunkIsTag(c, c.at)
+    var from  = c.at
+    var end   = chunkSentence(c, c.at)
     c.length = 0
     while c.at < c.count &&
-          (c.length == 0 || (!chunkParagraph(c, from, c.at) &&
+          (c.length == 0 || (!alone && !chunkIsTag(c, c.at) &&
+                             !chunkParagraph(c, from, c.at) &&
                              c.length + end - c.at + 1 <= c.limit)) {
         let size = end - c.at
         if c.length > 0 {

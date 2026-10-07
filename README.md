@@ -79,6 +79,15 @@ Text of any length is split at sentence ends into chunks of at most 300
 characters, 120 for Korean, with 0.3 s of silence between them. A
 character the model has no entry for stops the run with its code point.
 
+Supertonic 3's expression tags `<laugh>` `<breath>` `<surprise>` `<sigh>`
+`<scream>` `<throatclear>` `<sad>` `<angry>` `<cough>` `<yawn>` are
+chunked apart from the words around them: the model performs a tag only
+as an utterance of its own and reads a tag inside a sentence aloud as a
+word. A run of tags is one chunk, so `<laugh> <laugh> <laugh>` is one
+longer laugh. `<laugh>` and `<cough>` are clearly audible; `<sigh>` and
+`<breath>` are a breath; the rest do little. Text without tags renders
+byte for byte as before.
+
 Text is normalized to NFKD first, as the upstream SDK does, because the
 model's character table knows decomposed forms only: an accented letter
 is its base letter and a combining mark, a Hangul syllable is its jamo.
