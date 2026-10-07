@@ -550,12 +550,18 @@ static bool chunk_is_tag(const struct chunks * c, int32_t at) {
         "<laugh>", "<breath>", "<surprise>", "<sigh>", "<scream>",
         "<throatclear>", "<sad>", "<angry>", "<cough>", "<yawn>" };
     const int32_t    count = (int32_t)(sizeof(tags) / sizeof(tags[0]));
-    const uint32_t * cp    = c->raw + at;
-    const int32_t    left  = c->count - at;
+    const uint32_t * cp    = c->raw;
+    int32_t          end   = at;
     int32_t          i     = 0;
-    while (i < count && !text_starts(cp, left, tags[i])) { i++; }
-    const int32_t size = i < count ? (int32_t)strlen(tags[i]) : 0;
-    return i < count && (size == left || text_is_space(cp[size]));
+    while (i < count) {
+        if (text_starts(cp + end, c->count - end, tags[i])) {
+            end += (int32_t)strlen(tags[i]);
+            i = 0;
+        } else {
+            i++;
+        }
+    }
+    return end > at && (end == c->count || text_is_space(cp[end]));
 }
 
 static int32_t chunk_sentence(const struct chunks * c, int32_t at) {

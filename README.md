@@ -83,8 +83,9 @@ Supertonic 3's expression tags `<laugh>` `<breath>` `<surprise>` `<sigh>`
 `<scream>` `<throatclear>` `<sad>` `<angry>` `<cough>` `<yawn>` are
 chunked apart from the words around them: the model performs a tag only
 as an utterance of its own and reads a tag inside a sentence aloud as a
-word. A run of tags is one chunk, so `<laugh> <laugh> <laugh>` is one
-longer laugh. `<laugh>` and `<cough>` are clearly audible; `<sigh>` and
+word. A run of tags is one chunk, with or without spaces between them:
+`<laugh> <laugh> <laugh>` is one longer laugh, and `<cough><cough><cough>`
+sounds like someone coughing. `<laugh>` and `<cough>` are clearly audible; `<sigh>` and
 `<breath>` are a breath; the rest do little. Text without tags renders
 byte for byte as before.
 

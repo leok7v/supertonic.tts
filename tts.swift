@@ -576,14 +576,18 @@ func chunkParagraph(_ c: Chunks, _ from: Int, _ to: Int) -> Bool {
 func chunkIsTag(_ c: Chunks, _ at: Int) -> Bool {
     let tags = ["<laugh>", "<breath>", "<surprise>", "<sigh>", "<scream>",
                 "<throatclear>", "<sad>", "<angry>", "<cough>", "<yawn>"]
-    let cp   = UnsafePointer(c.raw) + at
-    let left = c.count - at
+    let cp   = UnsafePointer(c.raw)
+    var end  = at
     var i    = 0
-    while i < tags.count && !textStarts(cp, left, Array(tags[i].utf8)) {
-        i += 1
+    while i < tags.count {
+        if textStarts(cp + end, c.count - end, Array(tags[i].utf8)) {
+            end += tags[i].utf8.count
+            i = 0
+        } else {
+            i += 1
+        }
     }
-    let size = i < tags.count ? tags[i].utf8.count : 0
-    return i < tags.count && (size == left || textIsSpace(cp[size]))
+    return end > at && (end == c.count || textIsSpace(cp[end]))
 }
 
 func chunkSentence(_ c: Chunks, _ at: Int) -> Int {
