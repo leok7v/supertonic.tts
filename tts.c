@@ -1808,7 +1808,7 @@ int main(int argc, char ** argv) {
               option(argc, argv, "--text", "A gentle breeze moved through "
                      "the open window while everyone listened to the "
                      "story."),
-              option(argc, argv, "--lang", "en"),
+              option(argc, argv, "--lang", "na"),
               option(argc, argv, "--voice", "M1"),
               (uint32_t)strtoul(option(argc, argv, "--seed", "0"), NULL, 10),
               (int32_t)strtol(option(argc, argv, "--steps", "8"), NULL, 10),
@@ -1825,7 +1825,7 @@ int main(int argc, char ** argv) {
             }
         }
     } else {
-        printf("tts speak [--text T] [--voice M1] [--lang en] [--seed 0]\n"
+        printf("tts speak [--text T] [--voice M1] [--lang na] [--seed 0]\n"
                "          [--steps 8] [--speed 1.05] [--out tmp/tts.c.wav]\n"
                "          [--pack models/supertonic-fp32.safetensors]\n"
                "          [--profile]\n"

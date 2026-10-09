@@ -1814,7 +1814,7 @@ func run(_ arguments: [String]) -> Int32 {
               option(arguments, "--text", "A gentle breeze moved through " +
                      "the open window while everyone listened to the " +
                      "story."),
-              option(arguments, "--lang", "en"),
+              option(arguments, "--lang", "na"),
               option(arguments, "--voice", "M1"),
               UInt32(truncatingIfNeeded:
                          strtoul(option(arguments, "--seed", "0"), nil, 10)),
@@ -1834,7 +1834,7 @@ func run(_ arguments: [String]) -> Int32 {
             i += 1
         }
     } else {
-        print("tts speak [--text T] [--voice M1] [--lang en] [--seed 0]\n" +
+        print("tts speak [--text T] [--voice M1] [--lang na] [--seed 0]\n" +
               "          [--steps 8] [--speed 1.05] " +
               "[--out tmp/tts.swift.wav]\n" +
               "          [--pack models/supertonic-fp32.safetensors]\n" +

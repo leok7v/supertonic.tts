@@ -67,7 +67,7 @@ Without Accelerate:
     --out FILE     the WAV to write, 44.1 kHz, 16 bit, mono
     --text T       what to say
     --voice M1     F1 to F5, M1 to M5
-    --lang en      the language of the text, see below
+    --lang na      the language tag, see below
     --seed 0       another seed is another reading of the same text
     --steps 8      flow steps; time is linear in them
     --speed 1.05   higher is faster speech
@@ -98,9 +98,15 @@ Plane, so the engine carries no Unicode data and needs no ICU. Above
 U+FFFF nothing is decomposed: most emoji are dropped, and any other
 such character stops the run.
 
-Languages: `ar` `bg` `cs` `da` `de` `el` `en` `es` `et` `fi` `fr` `hi`
-`hr` `hu` `id` `it` `ja` `ko` `lt` `lv` `nl` `pl` `pt` `ro` `ru` `sk`
-`sl` `sv` `tr` `uk` `vi`.
+The model reads text in the language it is written in; the tag does
+not choose it. `na` is Supertonic's tag for text of unknown language
+and the default here: Russian in, Russian out, no guess needed, and a
+text may mix languages. The 31 codes are `ar` `bg` `cs` `da` `de` `el`
+`en` `es` `et` `fi` `fr` `hi` `hr` `hu` `id` `it` `ja` `ko` `lt` `lv`
+`nl` `pl` `pt` `ro` `ru` `sk` `sl` `sv` `tr` `uk` `vi`. Of them `ko`
+also shortens the chunks to 120 characters. In our listening a code
+changed nothing audible against `na`; the renders differ, so pick one
+and keep it.
 
 ## Speed and memory
 
