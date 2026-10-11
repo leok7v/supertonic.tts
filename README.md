@@ -16,13 +16,13 @@ runs on your own Mac or iPhone and reads its replies aloud.
 
 ## Get the model
 
-One file, 111 MB, from
+One file, 112 MB, from
 [huggingface.co/leok7v/supertonic](https://huggingface.co/leok7v/supertonic):
 
     HF=https://huggingface.co/leok7v/supertonic/resolve/main
     curl -L -O $HF/supertonic-q8.safetensors
 
-It holds the weights at 8 bits, the ten voices and the tables of the
+It holds the weights at 8 bits, seventeen voices and the tables of the
 text frontend. Two more files there hold the same model:
 
 - `supertonic-fp32.safetensors`, 399 MB, at full precision. By ear it
@@ -33,10 +33,6 @@ text frontend. Two more files there hold the same model:
   unless the memory matters.
 
 Any of them goes after `--pack`.
-
-    shasum -a 256 supertonic-q8.safetensors supertonic-q4.safetensors
-    6a9da44654efba508e007ebb028cf6e43b606dc9b53efd8f40523b81a4b25b5a
-    492c5ef03b7cde2eb20adbe002c3674b300bba8ca790afe8e535ff3309b2bb5d
 
 ## Build and run, C
 
@@ -66,12 +62,33 @@ Without Accelerate:
     --pack FILE    the model file, always needed here
     --out FILE     the WAV to write, 44.1 kHz, 16 bit, mono
     --text T       what to say
-    --voice M1     F1 to F5, M1 to M5
+    --voice M1     a code, F1 to F8 or M1 to M9, or a name, see below
     --lang na      the language tag, see below
     --seed 0       another seed is another reading of the same text
     --steps 8      flow steps; time is linear in them
     --speed 1.05   higher is faster speech
     --profile      print the time per kernel and shape
+
+## Voices
+
+Seventeen, in every model file. `--voice` takes the code or the name.
+
+    F1 Sarah    F2 Lily     F3 Jessica  F4 Olivia   F5 Emily
+    F6 Luna     F7 Rosie    F8 Kiki
+    M1 Alex     M2 James    M3 Robert   M4 Sam      M5 Daniel
+    M6 Jasper   M7 Bruno    M8 Hugo     M9 Leo
+
+F1 to F5 and M1 to M5 are Supertone's presets, named as in their demo.
+The other seven are synthetic voices carried over from
+[KittenTTS](https://huggingface.co/KittenML/kitten-tts-nano-0.1)
+(Apache 2.0), whose speakers are model outputs, not recordings: each
+style was recovered by optimizing Supertonic's two style tensors
+against clips of that speaker until a speaker verification model
+agreed. No person was recorded for any of the seventeen; `Leo` is
+KittenTTS's `expr-voice-5-m`. The seven are also here as
+`voices/F6.json` to `M9.json`, in the format of Supertone's own
+`voice_styles`, so the Python SDK can load them beside its presets.
+The engine reads voices from the model file only.
 
 ## Text
 
@@ -174,7 +191,9 @@ The model is not. It is Supertone's, released under the BigScience Open
 RAIL-M license, and the repacked files keep that license; its text is
 next to them on Hugging Face. It restricts some uses: read its
 Attachment A before you ship a voice. This repository holds none of the
-model.
+model. The seven voice files under `voices/` were made with the model
+and carry its license too, with KittenTTS (Apache 2.0) as the origin of
+the speakers.
 
 - Model: [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3)
 - Repacked files: [leok7v/supertonic](https://huggingface.co/leok7v/supertonic)

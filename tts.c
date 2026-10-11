@@ -1524,11 +1524,26 @@ static float * vocoder(struct tts * tts, const float * latent,
     return wav;
 }
 
+static const char * voice_code(const char * name) {
+    static const char * const names[][2] = {
+        { "Sarah", "F1" }, { "Lily", "F2" }, { "Jessica", "F3" },
+        { "Olivia", "F4" }, { "Emily", "F5" }, { "Luna", "F6" },
+        { "Rosie", "F7" }, { "Kiki", "F8" }, { "Alex", "M1" },
+        { "James", "M2" }, { "Robert", "M3" }, { "Sam", "M4" },
+        { "Daniel", "M5" }, { "Jasper", "M6" }, { "Bruno", "M7" },
+        { "Hugo", "M8" }, { "Leo", "M9" } };
+    const int32_t count = (int32_t)(sizeof(names) / sizeof(names[0]));
+    int32_t       i     = 0;
+    while (i < count && strcmp(names[i][0], name) != 0) { i++; }
+    return i < count ? names[i][1] : name;
+}
+
 static struct voice voice_open(struct tts * tts, const char * name) {
     const struct pack *   w = &tts->weights;
-    const struct tensor * ttl = weight(w, "voice.%s.ttl", name);
+    const char *          code = voice_code(name);
+    const struct tensor * ttl = weight(w, "voice.%s.ttl", code);
     const struct voice    voice = {
-        .dp = weight(w, "voice.%s.dp", name)->data, .tokens = ttl->shape[0],
+        .dp = weight(w, "voice.%s.dp", code)->data, .tokens = ttl->shape[0],
         .ttl = transposed(tts, ttl->data, ttl->shape[0], ttl->shape[1]) };
     return voice;
 }

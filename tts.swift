@@ -1535,11 +1535,24 @@ func vocoder(_ tts: TTS, _ latent: UnsafePointer<Float>, _ frames: Int,
     return wav
 }
 
+func voiceCode(_ name: String) -> String {
+    let names = [("Sarah", "F1"), ("Lily", "F2"), ("Jessica", "F3"),
+                 ("Olivia", "F4"), ("Emily", "F5"), ("Luna", "F6"),
+                 ("Rosie", "F7"), ("Kiki", "F8"), ("Alex", "M1"),
+                 ("James", "M2"), ("Robert", "M3"), ("Sam", "M4"),
+                 ("Daniel", "M5"), ("Jasper", "M6"), ("Bruno", "M7"),
+                 ("Hugo", "M8"), ("Leo", "M9")]
+    var i = 0
+    while i < names.count && names[i].0 != name { i += 1 }
+    return i < names.count ? names[i].1 : name
+}
+
 func voiceOpen(_ tts: TTS, _ name: String) -> Voice {
-    let w   = tts.weights
-    let ttl = weight(w, "voice.\(name).ttl")
+    let w    = tts.weights
+    let code = voiceCode(name)
+    let ttl  = weight(w, "voice.\(code).ttl")
     return Voice(ttl: transposed(tts, ttl.data, ttl.shape.0, ttl.shape.1),
-                 dp: weight(w, "voice.\(name).dp").data,
+                 dp: weight(w, "voice.\(code).dp").data,
                  tokens: ttl.shape.0)
 }
 
