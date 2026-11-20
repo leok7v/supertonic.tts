@@ -24,7 +24,7 @@
 
 enum { name_capacity = 192, text_capacity = 1024, arena_floats = 1 << 26,
        sample_rate = 44100, style_heads = 2, field_groups = 4,
-       chunk_limit = 300, korean_chunk_limit = 120, span_capacity = 256,
+       chunk_limit = 300, korean_chunk_limit = 120, span_capacity = 4096,
        arena_align = 32, widen_floats = 1 << 18, vocoder_slice = 256,
        q4_block = 32, q4_group = 8, q4_head = 20 };
 
@@ -1763,6 +1763,7 @@ static struct audio narrate(struct tts * tts, const char * text,
 static void speak(struct tts * tts, const char * text, const char * lang,
                   const char * name, uint32_t seed, int32_t steps,
                   float speed, const char * out) {
+    if (strlen(lang) >= 12) { fatal("--lang must be under 12 bytes"); }
     if (steps < 1) { fatal("--steps must be 1 or more"); }
     if (!(speed > 0.0f && speed < INFINITY)) {
         fatal("--speed must be a positive number");

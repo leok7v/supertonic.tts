@@ -16,7 +16,7 @@ let styleHeads       = 2
 let fieldGroups      = 4
 let chunkLimit       = 300
 let koreanChunkLimit = 120
-let spanCapacity     = 256
+let spanCapacity     = 4096
 let arenaAlign       = 32
 let widenFloats      = 1 << 18
 let vocoderSlice     = 256
@@ -1763,6 +1763,7 @@ func narrate(_ tts: TTS, _ text: String, _ lang: String, _ voice: Voice,
 
 func speak(_ tts: TTS, _ text: String, _ lang: String, _ name: String,
            _ seed: UInt32, _ steps: Int, _ speed: Float, _ out: String) {
+    if lang.utf8.count >= 12 { fatal("--lang must be under 12 bytes") }
     if steps < 1 { fatal("--steps must be 1 or more") }
     if !(speed > 0.0 && speed < Float.infinity) {
         fatal("--speed must be a positive number")
