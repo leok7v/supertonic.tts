@@ -431,6 +431,18 @@ func textLookup(_ t: Scalars, _ indexer: UnsafePointer<Int32>,
     }
 }
 
+func recordBytes(_ record: UnsafeRawPointer) -> Int {
+    let shape  = (record + Record.shape).assumingMemoryBound(to: Int32.self)
+    let count  = Int(record.load(fromByteOffset: Record.count,
+                                 as: Int64.self))
+    let bits   = record.load(fromByteOffset: Record.bits, as: Int32.self)
+    let rows   = shape[0] > 0 ? Int(shape[0]) : 1
+    let blocks = (count / rows + q4Block - 1) / q4Block
+    let packed = (blocks + q4Group - 1) / q4Group * q4Head +
+                 blocks * (q4Block / 2)
+    return bits == 4 ? rows * packed : bits == 16 ? 2 * count : count
+}
+
 func packOpen(_ path: String) -> Pack {
     let file   = open(path, O_RDONLY)
     var status = stat()
@@ -449,6 +461,8 @@ func packOpen(_ path: String) -> Pack {
     var pack    = Pack()
     let count   = Int(index.load(fromByteOffset: 8, as: Int64.self))
     let records = index + 16
+    let room    = (Int(status.st_size) - header - 24) / Record.size
+    if count < 0 || count > room { fatal("\(path) is truncated") }
     pack.tensors.reserveCapacity(count)
     for i in 0..<count {
         let record = records + i * Record.size
@@ -456,6 +470,12 @@ func packOpen(_ path: String) -> Pack {
                          .assumingMemoryBound(to: Int32.self)
         let offset = record.load(fromByteOffset: Record.offset,
                                  as: Int64.self)
+        let size   = record.load(fromByteOffset: Record.count,
+                                 as: Int64.self)
+        if size < 0 || offset < 0 ||
+           Int(offset) > Int(status.st_size) - recordBytes(record) {
+            fatal("\(path) is truncated")
+        }
         pack.tensors.append(Tensor(
             name: record.assumingMemoryBound(to: CChar.self),
             data: (map + Int(offset)).assumingMemoryBound(to: Float.self),
@@ -1743,6 +1763,10 @@ func narrate(_ tts: TTS, _ text: String, _ lang: String, _ voice: Voice,
 
 func speak(_ tts: TTS, _ text: String, _ lang: String, _ name: String,
            _ seed: UInt32, _ steps: Int, _ speed: Float, _ out: String) {
+    if steps < 1 { fatal("--steps must be 1 or more") }
+    if !(speed > 0.0 && speed < Float.infinity) {
+        fatal("--speed must be a positive number")
+    }
     let started = secondsNow()
     let voice   = voiceOpen(tts, name)
     let audio   = narrate(tts, text, lang, voice, seed, steps, speed)

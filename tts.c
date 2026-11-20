@@ -411,6 +411,15 @@ static int tensor_order(const void * left, const void * right) {
     return strcmp(a->name, b->name);
 }
 
+static int64_t record_bytes(const struct record * record) {
+    const int64_t rows   = record->shape[0] > 0 ? record->shape[0] : 1;
+    const int64_t blocks = (record->count / rows + q4_block - 1) / q4_block;
+    const int64_t packed = (blocks + q4_group - 1) / q4_group * q4_head +
+                           blocks * (q4_block / 2);
+    return record->bits == 4 ? rows * packed :
+           record->bits == 16 ? 2 * record->count : record->count;
+}
+
 static struct pack pack_open(const char * path) {
     const int file = open(path, O_RDONLY);
     struct stat status;
@@ -430,8 +439,17 @@ static struct pack pack_open(const char * path) {
     struct pack pack = { 0 };
     memcpy(&pack.count, index + 8, sizeof pack.count);
     const struct record * records = (const void *)(index + 16);
+    const int64_t room = (status.st_size - header - 24) /
+                         (int64_t)sizeof(struct record);
+    if (pack.count < 0 || pack.count > room) {
+        fatal("%s is truncated", path);
+    }
     pack.tensors = calloc((size_t)pack.count, sizeof(struct tensor));
     for (int64_t i = 0; i < pack.count; i++) {
+        if (records[i].count < 0 || records[i].offset < 0 ||
+            records[i].offset > status.st_size - record_bytes(&records[i])) {
+            fatal("%s is truncated", path);
+        }
         pack.tensors[i] = (struct tensor){
             .name = records[i].name, .count = records[i].count,
             .bits = records[i].bits,
@@ -466,7 +484,13 @@ static const struct tensor * weight(const struct pack * pack,
     va_start(arguments, format);
     const struct tensor * tensor = pack_find(pack, format, arguments);
     va_end(arguments);
-    if (tensor == NULL) { fatal("no tensor named like %s", format); }
+    if (tensor == NULL) {
+        char name[name_capacity];
+        va_start(arguments, format);
+        vsnprintf(name, sizeof name, format, arguments);
+        va_end(arguments);
+        fatal("no tensor named %s", name);
+    }
     return tensor;
 }
 
@@ -1739,6 +1763,10 @@ static struct audio narrate(struct tts * tts, const char * text,
 static void speak(struct tts * tts, const char * text, const char * lang,
                   const char * name, uint32_t seed, int32_t steps,
                   float speed, const char * out) {
+    if (steps < 1) { fatal("--steps must be 1 or more"); }
+    if (!(speed > 0.0f && speed < INFINITY)) {
+        fatal("--speed must be a positive number");
+    }
     const double started = seconds_now();
     const struct voice voice = voice_open(tts, name);
     const struct audio audio = narrate(tts, text, lang, &voice, seed, steps,
