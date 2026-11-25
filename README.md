@@ -173,9 +173,11 @@ pages and read them again.
 - Keep one `TTS` for the life of the app. The model is mapped read
   only, so its pages are not private memory.
 
-`tts.c` goes into an app as it is, compiled with `-DNO_MAIN`, which
-leaves out `main` and the command line. Five functions are public;
-declare them where the app needs them:
+## C API
+
+`tts.h` declares the API of `tts.c`. Compile `tts.c` with `-DNO_MAIN`
+to leave out `main` and the command line; without it the same file is
+the `tts` program, with the same output.
 
     struct tts;
     struct tts * tts_load(const char * pack);
@@ -188,11 +190,24 @@ declare them where the app needs them:
     void tts_close(struct tts * tts);
 
 `tts_speak` returns `count` mono float samples at `tts_rate()`, 44100
-per second; free them with `tts_free`. `voice`, `lang`, `seed`,
-`steps` and `speed` are the options above: `"M1"`, `"na"`, 0, 8 and
-1.05 by default. The same arguments give the same samples as
-`./tts speak`. An error ends the process with a message, as in the
-command line. One `struct tts` serves one thread at a time.
+per second. `voice`, `lang`, `seed`, `steps` and `speed` are the
+options above, `"M1"`, `"na"`, 0, 8 and 1.05 by default, and the same
+arguments give the same samples as `./tts speak`. An error ends the
+process with a message, as in the command line. One `struct tts`
+serves one thread at a time.
+
+    #include "tts.h"
+
+    struct tts * tts = tts_load("supertonic-q8.safetensors");
+    int32_t count = 0;
+    float * samples = tts_speak(tts, "Who are you?", "Kiki", "na", 0, 8,
+                                1.05f, &count);
+    /* count samples at tts_rate() per second */
+    tts_free(samples);
+    tts_close(tts);
+
+    clang -std=c2x -O3 -ffp-contract=off -DACCELERATE -DNO_MAIN \
+          -c tts.c -o tts.o
 
 ## Where it comes from
 

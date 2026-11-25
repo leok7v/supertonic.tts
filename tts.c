@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "tts.h"
 #ifdef ACCELERATE
 #define ACCELERATE_NEW_LAPACK
 #include <Accelerate/Accelerate.h>
