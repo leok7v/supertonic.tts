@@ -173,6 +173,27 @@ pages and read them again.
 - Keep one `TTS` for the life of the app. The model is mapped read
   only, so its pages are not private memory.
 
+`tts.c` goes into an app as it is, compiled with `-DNO_MAIN`, which
+leaves out `main` and the command line. Five functions are public;
+declare them where the app needs them:
+
+    struct tts;
+    struct tts * tts_load(const char * pack);
+    float * tts_speak(struct tts * tts, const char * text,
+                      const char * voice, const char * lang,
+                      uint32_t seed, int32_t steps, float speed,
+                      int32_t * count);
+    int32_t tts_rate(void);
+    void tts_free(float * samples);
+    void tts_close(struct tts * tts);
+
+`tts_speak` returns `count` mono float samples at `tts_rate()`, 44100
+per second; free them with `tts_free`. `voice`, `lang`, `seed`,
+`steps` and `speed` are the options above: `"M1"`, `"na"`, 0, 8 and
+1.05 by default. The same arguments give the same samples as
+`./tts speak`. An error ends the process with a message, as in the
+command line. One `struct tts` serves one thread at a time.
+
 ## Where it comes from
 
 Built and tested on macOS on Apple silicon. Another libc needs its own
