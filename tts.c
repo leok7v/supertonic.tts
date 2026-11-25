@@ -32,9 +32,6 @@ enum { name_capacity = 192, text_capacity = 1024, arena_floats = 1 << 26,
 enum { module_duration, module_text, module_field, module_vocoder,
        module_other, module_count };
 
-static const char * const module_names[module_count] = {
-    "duration", "text", "field", "vocoder", "other" };
-
 static const int32_t encoder_dilations[] = { 1, 1, 2, 2, 4, 4 };
 static const int32_t field_dilations[]   = { 1, 2, 4, 8 };
 static const int32_t vocoder_dilations[] = { 1, 2, 4, 1, 2, 4, 1, 1, 1, 1 };
@@ -1659,7 +1656,7 @@ static struct audio narrate(struct tts * tts, const char * text,
                             uint32_t seed, int32_t steps, float speed) {
     const int32_t limit = strcmp(lang, "ko") == 0 ? korean_chunk_limit :
                                                     chunk_limit;
-    const int32_t pause = (int32_t)(chunk_silence * sample_rate);
+    const int32_t pause = (int32_t)(chunk_silence * (double)sample_rate);
     const size_t  mark  = tts->used;
     struct chunks c     = chunk_open(&tts->weights, text, limit);
     struct audio  whole = { 0 };
@@ -1734,6 +1731,9 @@ void tts_close(struct tts * tts) {
 }
 
 #ifndef NO_MAIN
+
+static const char * const module_names[module_count] = {
+    "duration", "text", "field", "vocoder", "other" };
 
 static int16_t pcm16(float sample) {
     const float scaled = sample * 2147483648.0f;
