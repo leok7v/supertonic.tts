@@ -99,7 +99,7 @@ struct condition {
     const float * keys;
     const float * values;
     int32_t       tokens;
-    const char *  tag;
+    char          tag[16];
 };
 
 struct voice {
@@ -227,7 +227,7 @@ static int32_t text_decompose(const uint32_t * raw, int32_t count,
         const bool    basic = raw[i] <= 0xFFFF;
         const int32_t from  = basic ? offsets[raw[i]] : 0;
         const int32_t size  = basic ? offsets[raw[i] + 1] - from : 0;
-        if (cp != NULL && size == 0) { cp[made] = raw[i]; }
+        if (cp != NULL && size <= 0) { cp[made] = raw[i]; }
         for (int32_t k = 0; cp != NULL && k < size; k++) {
             cp[made + k] = (uint32_t)parts[from + k];
         }
@@ -1435,14 +1435,11 @@ static void flow(struct tts * tts, float * x, int64_t size, int32_t n,
     const struct tensor * out = weight(&tts->weights,
                                        FIELD ".time_encoder.mlp.2.linear"
                                              ".weight");
-    char tags[2][16];
-    spoken->tag = tags[0];
-    silent->tag = tags[1];
     for (int32_t step = 0; step < steps; step++) {
         const size_t mark = tts->used;
         float * time = floats(tts, out->shape[0]);
-        snprintf(tags[0], sizeof tags[0], "%d.c", step);
-        snprintf(tags[1], sizeof tags[1], "%d.u", step);
+        snprintf(spoken->tag, sizeof spoken->tag, "%d.c", step);
+        snprintf(silent->tag, sizeof silent->tag, "%d.u", step);
         time_embedding(tts, time, (float)step / (float)steps);
         tap(tts, time, out->shape[0], "ve.%d.time", step);
         const float * with = velocity(tts, x, n, time, spoken);
