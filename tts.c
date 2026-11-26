@@ -25,7 +25,8 @@
 
 enum { name_capacity = 192, text_capacity = 1024, arena_floats = 1 << 26,
        sample_rate = 44100, style_heads = 2, field_groups = 4,
-       chunk_limit = 300, korean_chunk_limit = 120, span_capacity = 4096,
+       chunk_limit = 300, korean_chunk_limit = 120, sentence_limit = 0,
+       span_capacity = 4096,
        arena_align = 32, widen_floats = 1 << 18, vocoder_slice = 256,
        q4_block = 32, q4_group = 8, q4_head = 20 };
 
@@ -126,7 +127,7 @@ struct audio {
 
 static double seconds_now(void) {
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    timespec_get(&now, TIME_UTC);
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 
@@ -744,6 +745,21 @@ static float dot(const float * a, int64_t a_stride, const float * b,
     return sum;
 }
 
+#ifdef __APPLE__
+
+static void sine_cosine(float angle, float * sine, float * cosine) {
+    __sincosf(angle, sine, cosine);
+}
+
+#else
+
+static void sine_cosine(float angle, float * sine, float * cosine) {
+    *sine   = sinf(angle);
+    *cosine = cosf(angle);
+}
+
+#endif
+
 #ifdef ACCELERATE
 
 static void matmul(float * y, const float * x, int32_t n, const float * w,
@@ -1042,7 +1058,7 @@ static float * stack(struct tts * tts, float * x, int32_t c, int32_t n,
                      const char * tag, const char * at) {
     for (int32_t i = 0; has(&tts->weights, "%s.convnext.%d.gamma", at, i);
          i++) {
-        char layer[name_capacity];
+        char layer[2 * name_capacity];
         snprintf(layer, sizeof layer, "%s.convnext.%d", at, i);
         x = convnext(tts, x, c, n, dilations != NULL ? dilations[i] : 1,
                      causal, layer);
@@ -1305,7 +1321,7 @@ static void time_embedding(struct tts * tts, float * out, float t) {
     float * waves = floats(tts, 2 * half);
     float * h = floats(tts, wide);
     for (int32_t i = 0; i < half; i++) {
-        __sincosf(t * time_scale * freqs[i], &waves[i], &waves[half + i]);
+        sine_cosine(t * time_scale * freqs[i], &waves[i], &waves[half + i]);
     }
     conv(tts, h, waves, 2 * half, 1, w0,
          weight(w, FIELD ".time_encoder.mlp.0.linear.bias"), 1, false);
@@ -1330,7 +1346,7 @@ static void rotate(struct tts * tts, float * x, int32_t c, int32_t n,
         const float angle = (float)t / (float)n * theta->data[pair % half];
         float sine = 0.0f;
         float cosine = 0.0f;
-        __sincosf(angle, &sine, &cosine);
+        sine_cosine(angle, &sine, &cosine);
         const float real = *a * cosine - *b * sine;
         *b = *a * sine + *b * cosine;
         *a = real;
@@ -1391,7 +1407,7 @@ static float * field_block(struct tts * tts, float * x, int32_t c, int32_t n,
             text_condition(tts, x, c, n, condition, at);
         } else {
             float * styled = floats(tts, (int64_t)c * n);
-            strlcat(at, ".attention", sizeof at);
+            snprintf(at, sizeof at, FIELD ".main_blocks.%d.attention", block);
             style_attention(tts, styled, x, n, condition, at);
             axpy(x, 1.0f, styled, (int64_t)c * n);
             tts->used = mark;
@@ -1606,7 +1622,7 @@ static struct audio synthesize(struct tts * tts, const uint32_t * text,
         weight(w, AE ".decoder.head.layer2.weight")->shape[0] * rows /
         weight(w, AE ".decoder.embed.net.weight")->shape[1];
     const int32_t m = voice->tokens;
-    int32_t ids[text_capacity];
+    int32_t ids[text_capacity] = { 0 };
     const int32_t n = text_ids(text, count, lang, w, ids, text_capacity);
     tap_bytes(tts, "text.ids", ids, (size_t)n * sizeof(int32_t),
               sizeof(int32_t));
@@ -1680,14 +1696,54 @@ static struct audio narrate(struct tts * tts, const char * text,
     return whole;
 }
 
+static int32_t recite(struct tts * tts, const char * text, const char * lang,
+                      const struct voice * voice, uint32_t seed,
+                      int32_t steps, float speed, tts_stream stream,
+                      void * that) {
+    const int32_t pause = (int32_t)(chunk_silence * (double)sample_rate);
+    float *       quiet = floats(tts, pause);
+    const size_t  mark  = tts->used;
+    struct chunks c     = chunk_open(&tts->weights, text, sentence_limit);
+    int32_t       total = 0;
+    struct mt19937 mt;
+    mt_seed(&mt, seed);
+    fill(quiet, 0.0f, pause);
+    while (chunk_next(&c)) {
+        if (total > 0) {
+            stream(that, quiet, pause);
+            total += pause;
+        }
+        const struct audio part = synthesize(tts, c.cp, c.length, lang, voice,
+                                             &mt, steps, speed);
+        stream(that, part.samples, part.count);
+        total += part.count;
+        tts->used = mark;
+    }
+    free(c.raw);
+    free(c.cp);
+    return total;
+}
+
+static const char * refusal(const struct tts * tts, const char * name,
+                            const char * lang, int32_t steps, float speed) {
+    const char * why = NULL;
+    if (strlen(lang) >= 12) {
+        why = "--lang must be under 12 bytes";
+    } else if (steps < 1) {
+        why = "--steps must be 1 or more";
+    } else if (!(speed > 0.0f && speed < INFINITY)) {
+        why = "--speed must be a positive number";
+    } else if (!has(&tts->weights, "voice.%s.ttl", voice_code(name))) {
+        why = "--voice names no voice of the pack";
+    }
+    return why;
+}
+
 static struct audio utter(struct tts * tts, const char * text,
                           const char * name, const char * lang,
                           uint32_t seed, int32_t steps, float speed) {
-    if (strlen(lang) >= 12) { fatal("--lang must be under 12 bytes"); }
-    if (steps < 1) { fatal("--steps must be 1 or more"); }
-    if (!(speed > 0.0f && speed < INFINITY)) {
-        fatal("--speed must be a positive number");
-    }
+    const char * why = refusal(tts, name, lang, steps, speed);
+    if (why != NULL) { fatal("%s", why); }
     const size_t       mark  = tts->used;
     const struct voice voice = voice_open(tts, name);
     const struct audio audio = narrate(tts, text, lang, &voice, seed, steps,
@@ -1710,6 +1766,22 @@ float * tts_speak(struct tts * tts, const char * text, const char * voice,
                                      speed);
     *count = audio.count;
     return audio.samples;
+}
+
+int32_t tts_speak_stream(struct tts * tts, const char * text,
+                         const char * voice, const char * lang,
+                         uint32_t seed, int32_t steps, float speed,
+                         tts_stream stream, void * that) {
+    int32_t total = -1;
+    if (text != NULL && stream != NULL &&
+        refusal(tts, voice, lang, steps, speed) == NULL) {
+        const size_t       mark   = tts->used;
+        const struct voice chosen = voice_open(tts, voice);
+        total = recite(tts, text, lang, &chosen, seed, steps, speed, stream,
+                       that);
+        tts->used = mark;
+    }
+    return total;
 }
 
 int32_t tts_rate(void) {
@@ -1815,13 +1887,52 @@ static int32_t gate(struct tts * tts, const char * path) {
     return tts->failures;
 }
 
+struct heard {
+    struct audio audio;
+    double       started;
+    double       first;
+};
+
+static void hear(void * that, const float * samples, int32_t count) {
+    struct heard * heard = that;
+    if (heard->audio.count == 0) {
+        heard->first = seconds_now() - heard->started;
+    }
+    heard->audio.samples = realloc(heard->audio.samples,
+                                   (size_t)(heard->audio.count + count) *
+                                   sizeof(float));
+    if (heard->audio.samples == NULL) { fatal("no memory for the audio"); }
+    memcpy(heard->audio.samples + heard->audio.count, samples,
+           (size_t)count * sizeof(float));
+    heard->audio.count  += count;
+    heard->audio.seconds = (float)heard->audio.count / (float)sample_rate;
+}
+
+static struct heard recorded(struct tts * tts, const char * text,
+                             const char * lang, const char * name,
+                             uint32_t seed, int32_t steps, float speed,
+                             bool streamed) {
+    struct heard heard = { .started = seconds_now() };
+    if (streamed) {
+        const char * why = refusal(tts, name, lang, steps, speed);
+        if (why != NULL) { fatal("%s", why); }
+        tts_speak_stream(tts, text, name, lang, seed, steps, speed, hear,
+                         &heard);
+        if (heard.audio.count == 0) { fatal("the text is empty"); }
+    } else {
+        heard.audio = utter(tts, text, name, lang, seed, steps, speed);
+        heard.first = seconds_now() - heard.started;
+    }
+    return heard;
+}
+
 static void speak(struct tts * tts, const char * text, const char * lang,
                   const char * name, uint32_t seed, int32_t steps,
-                  float speed, const char * out) {
-    const double started = seconds_now();
-    const struct audio audio = utter(tts, text, name, lang, seed, steps,
-                                     speed);
-    const double elapsed = seconds_now() - started;
+                  float speed, const char * out, bool streamed) {
+    const struct heard heard = recorded(tts, text, lang, name, seed, steps,
+                                        speed, streamed);
+    const struct audio audio = heard.audio;
+    const double elapsed = seconds_now() - heard.started;
     size_t bytes = 0;
     uint8_t * file = wave(audio.samples, audio.count, sample_rate, &bytes);
     FILE * sink = fopen(out, "wb");
@@ -1831,9 +1942,10 @@ static void speak(struct tts * tts, const char * text, const char * lang,
     fclose(sink);
     free(file);
     tts_free(audio.samples);
-    printf("%s: audio=%.2fs wall=%.2fs rtf=%.1fx rate=%d samples=%d "
-           "voice=%s\n", out, (double)audio.seconds, elapsed,
-           (double)audio.seconds / elapsed, sample_rate, audio.count, name);
+    printf("%s: audio=%.2fs first=%.2fs wall=%.2fs rtf=%.1fx rate=%d "
+           "samples=%d voice=%s\n", out, (double)audio.seconds, heard.first,
+           elapsed, (double)audio.seconds / elapsed, sample_rate,
+           audio.count, name);
 }
 
 static int span_order(const void * left, const void * right) {
@@ -1906,7 +2018,8 @@ int main(int argc, char ** argv) {
               (uint32_t)strtoul(option(argc, argv, "--seed", "0"), NULL, 10),
               (int32_t)strtol(option(argc, argv, "--steps", "8"), NULL, 10),
               (float)strtod(option(argc, argv, "--speed", "1.05"), NULL),
-              option(argc, argv, "--out", "tmp/tts.c.wav"));
+              option(argc, argv, "--out", "tmp/tts.c.wav"),
+              flag(argc, argv, "--stream"));
         if (tts->profile != NULL) { profile_print(tts); }
         tts_close(tts);
     } else if (strcmp(command, "gate") == 0 && argc > 2) {
@@ -1923,8 +2036,8 @@ int main(int argc, char ** argv) {
         printf("tts speak [--text T] [--voice M1] [--lang na] [--seed 0]\n"
                "          [--steps 8] [--speed 1.05] [--out tmp/tts.c.wav]\n"
                "          [--pack models/supertonic-fp32.safetensors]\n"
-               "          [--profile]\n"
-               "tts gate  [--pack models/supertonic-fp32.safetensors]\n"
+               "          [--profile] [--stream]\n"
+               "tts gate [--pack models/supertonic-fp32.safetensors]\n"
                "          tmp/golden/NAME.safetensors ...\n");
         status = strcmp(command, "help") != 0;
     }

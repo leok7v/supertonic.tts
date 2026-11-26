@@ -4,6 +4,7 @@ Supertonic 3, Supertone's on-device text to speech model (31 languages,
 about 99M parameters, 44.1 kHz), as one file of C or one file of Swift.
 
     tts.c       the whole engine and its command line
+    tts.h       the C API of tts.c, for an app
     tts.swift   the same engine, function for function
 
 Each is complete on its own and needs libc only. Accelerate is an opt in
@@ -46,6 +47,10 @@ Without Accelerate, plain loops and libc:
 
     clang -std=c2x -O3 -ffp-contract=off -o tts tts.c
 
+On Linux with glibc, clang or gcc:
+
+    clang -std=c2x -O3 -ffp-contract=off -o tts tts.c -lm
+
 ## Build and run, Swift
 
     swiftc -O -D ACCELERATE -Xcc -DACCELERATE_NEW_LAPACK -o tts-swift \
@@ -68,6 +73,9 @@ Without Accelerate:
     --steps 8      flow steps; time is linear in them
     --speed 1.05   higher is faster speech
     --profile      print the time per kernel and shape
+    --stream       speak through the streaming call, see below; the
+                   line printed then says first=, the seconds to the
+                   first audio
 
 ## Voices
 
@@ -163,9 +171,19 @@ pages and read them again.
 
 `tts.swift` is meant to be lifted into an iOS or macOS target.
 
-- Delete its last line, `exit(run(CommandLine.arguments))`. `ttsOpen`
-  maps the model once, `voiceOpen` picks a voice, and `narrate` turns
-  text into float samples.
+- Compile it with `-D NO_MAIN` to leave out the command line. The API
+  is the C API in Swift:
+
+      let tts = ttsLoad("supertonic-q8.safetensors")
+      let samples: [Float] = ttsSpeak(tts, "Who are you?", "Kiki", "na",
+                                      0, 8, 1.05)
+      let total = ttsSpeakStream(tts, "One. Two.", "Kiki", "na", 0, 8,
+                                 1.05, { part in player.enqueue(part) })
+      ttsClose(tts)
+
+  `part` is an `UnsafeBufferPointer<Float>` at `ttsRate()` per second,
+  valid during the call only. `ttsSpeakStream` returns the total sample
+  count, or -1 for a bad voice, language, step count or speed.
 - Compile the file with `-O` in Debug too. Unoptimized it is hundreds
   of times slower.
 - Its functions are top level (`fill`, `stack`, `flow`). Wrap the file
@@ -180,11 +198,17 @@ to leave out `main` and the command line; without it the same file is
 the `tts` program, with the same output.
 
     struct tts;
+    typedef void (*tts_stream)(void * that, const float * samples,
+                               int32_t count);
     struct tts * tts_load(const char * pack);
     float * tts_speak(struct tts * tts, const char * text,
                       const char * voice, const char * lang,
                       uint32_t seed, int32_t steps, float speed,
                       int32_t * count);
+    int32_t tts_speak_stream(struct tts * tts, const char * text,
+                             const char * voice, const char * lang,
+                             uint32_t seed, int32_t steps, float speed,
+                             tts_stream stream, void * that);
     int32_t tts_rate(void);
     void tts_free(float * samples);
     void tts_close(struct tts * tts);
@@ -209,10 +233,48 @@ serves one thread at a time.
     clang -std=c2x -O3 -ffp-contract=off -DACCELERATE -DNO_MAIN \
           -c tts.c -o tts.o
 
+### Streaming, to start talking earlier
+
+`tts_speak` returns when the whole text is spoken. `tts_speak_stream`
+speaks the same text one sentence at a time and calls `stream` after
+each one, so a player can start after the first sentence. Between two
+sentences it calls `stream` once more with 0.3 s of silence. The calls
+in order are the whole utterance; the return value is its sample count,
+or -1 for a bad voice, language, step count or speed, where `tts_speak`
+ends the process.
+
+`that` is handed back to `stream` unchanged on every call. A C function
+pointer carries no state of its own, and a Swift closure that captures
+state cannot be passed as a C function pointer, so the state travels
+in `that`: a buffer, a player, or `Unmanaged.passUnretained(self)`.
+`samples` points into the engine's scratch memory and is valid only
+during the call: copy it or play it, and do not call the same
+`struct tts` from inside `stream`.
+
+The model generates a chunk of text whole (the duration, then eight
+flow steps over every frame, then the vocoder), so a sentence is the
+smallest unit that can come out early. Each sentence is its own chunk,
+with the same voice, seed, steps and speed, so the stream is not the
+same samples as `tts_speak`, which puts up to 300 characters in one
+chunk; it says the same words, with a pause between every two
+sentences. Apple M3, q8, Accelerate, three sentences, 8.3 s of speech:
+the first audio after 0.30 s against 0.65 s for all of it from
+`tts_speak`, and 0.88 s for the whole stream, because the cost per
+chunk comes three times. Without Accelerate the engine runs at about
+real time, and the first sentence arrives after 3.6 s against 7.9 s.
+
+    static void play(void * that, const float * samples, int32_t count) {
+        /* copy count samples at tts_rate() into the player behind that */
+    }
+
+    int32_t total = tts_speak_stream(tts, "One. Two. Three.", "M1", "na",
+                                     0, 8, 1.05f, play, player);
+
 ## Where it comes from
 
-Built and tested on macOS on Apple silicon. Another libc needs its own
-`sincosf` in place of Apple's `__sincosf`.
+Built and tested on macOS on Apple silicon. `tts.c` also builds on
+Linux with glibc, with clang or gcc and no extra flag, and writes the
+same WAV there as before; `tts.swift` is Apple only.
 
 The engine was written against the upstream ONNX SDK and is checked
 stage by stage against it: 497 named taps per text agree to float32

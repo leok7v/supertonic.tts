@@ -16,6 +16,7 @@ let styleHeads       = 2
 let fieldGroups      = 4
 let chunkLimit       = 300
 let koreanChunkLimit = 120
+let sentenceLimit    = 0
 let spanCapacity     = 4096
 let arenaAlign       = 32
 let widenFloats      = 1 << 18
@@ -30,8 +31,6 @@ let moduleField    = 2
 let moduleVocoder  = 3
 let moduleOther    = 4
 let moduleCount    = 5
-
-let moduleNames = ["duration", "text", "field", "vocoder", "other"]
 
 let encoderDilations        = [1, 1, 2, 2, 4, 4]
 let fieldDilations          = [1, 2, 4, 8]
@@ -62,6 +61,8 @@ struct Tensor {
 
 struct Pack {
     var tensors: [Tensor] = []
+    var map:     UnsafeMutableRawPointer? = nil
+    var size     = 0
 }
 
 struct Lap {
@@ -244,7 +245,7 @@ func textDecompose(_ raw: UnsafePointer<UInt32>, _ count: Int,
         let from  = basic ? Int(offsets[Int(raw[i])]) : 0
         let size  = basic ? Int(offsets[Int(raw[i]) + 1]) - from : 0
         if let cp = cp {
-            if size == 0 { cp[made] = raw[i] }
+            if size <= 0 { cp[made] = raw[i] }
             for k in 0..<size {
                 cp[made + k] = UInt32(bitPattern: parts[from + k])
             }
@@ -458,7 +459,7 @@ func packOpen(_ path: String) -> Pack {
     }
     close(file)
     let index   = UnsafeRawPointer(map) + 8 + header
-    var pack    = Pack()
+    var pack    = Pack(map: map, size: Int(status.st_size))
     let count   = Int(index.load(fromByteOffset: 8, as: Int64.self))
     let records = index + 16
     let room    = (Int(status.st_size) - header - 24) / Record.size
@@ -487,6 +488,11 @@ func packOpen(_ path: String) -> Pack {
                                   as: Int32.self))))
     }
     return pack
+}
+
+func packClose(_ pack: inout Pack) {
+    munmap(pack.map, pack.size)
+    pack = Pack()
 }
 
 func packFind(_ pack: Pack, _ name: String) -> Tensor? {
@@ -754,6 +760,11 @@ func dot(_ a: UnsafePointer<Float>, _ aStride: Int,
         sum += a[i &* aStride] * b[i &* bStride]
     }
     return sum
+}
+
+func sineCosine(_ angle: Float) -> (Float, Float) {
+    let both = __sincosf_stret(angle)
+    return (both.__sinval, both.__cosval)
 }
 
 #if ACCELERATE
@@ -1323,9 +1334,9 @@ func timeEmbedding(_ tts: TTS, _ out: UnsafeMutablePointer<Float>,
     let waves = floats(tts, 2 * half)
     let h     = floats(tts, wide)
     for i in 0..<half {
-        let wave = __sincosf_stret(t * timeScale * freqs[i])
-        waves[i] = wave.__sinval
-        waves[half + i] = wave.__cosval
+        let wave = sineCosine(t * timeScale * freqs[i])
+        waves[i] = wave.0
+        waves[half + i] = wave.1
     }
     conv(tts, h, waves, 2 * half, 1, w0,
          weight(w, FIELD + ".time_encoder.mlp.0.linear.bias"), 1, false)
@@ -1348,9 +1359,9 @@ func rotate(_ tts: TTS, _ x: UnsafeMutablePointer<Float>, _ c: Int,
         let a     = x + (pair / half * 2 * half + pair % half) * n + t
         let b     = a + half * n
         let angle = Float(t) / Float(n) * theta.data[pair % half]
-        let turn  = __sincosf_stret(angle)
-        let real  = a.pointee * turn.__cosval - b.pointee * turn.__sinval
-        b.pointee = a.pointee * turn.__sinval + b.pointee * turn.__cosval
+        let turn  = sineCosine(angle)
+        let real  = a.pointee * turn.1 - b.pointee * turn.0
+        b.pointee = a.pointee * turn.0 + b.pointee * turn.1
         a.pointee = real
     }
     profileAdd(tts, started, "rotate", c, 1, 1, n)
@@ -1636,6 +1647,141 @@ func synthesize(_ tts: TTS, _ text: UnsafePointer<UInt32>, _ count: Int,
     return Audio(samples: samples, count: made, seconds: seconds)
 }
 
+func ttsOpen(_ path: String) -> TTS {
+    let weights = packOpen(path)
+    let bytes   = arenaFloats * MemoryLayout<Float>.size
+    let arena: UnsafeMutableRawPointer = mmap(
+        nil, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+    if arena == MAP_FAILED { fatal("no memory for the arena") }
+    return TTS(weights,
+               arena.bindMemory(to: Float.self, capacity: arenaFloats))
+}
+
+func narrate(_ tts: TTS, _ text: String, _ lang: String, _ voice: Voice,
+             _ seed: UInt32, _ steps: Int, _ speed: Float) -> Audio {
+    let limit = lang == "ko" ? koreanChunkLimit : chunkLimit
+    let pause = Int(chunkSilence * Double(sampleRate))
+    let mark  = tts.used
+    var c     = chunkOpen(tts.weights, text, limit)
+    var whole = Audio(samples: .allocate(capacity: 0), count: 0,
+                      seconds: 0.0)
+    var mt    = Mt19937()
+    mtSeed(&mt, seed)
+    while chunkNext(&c) {
+        let part = synthesize(tts, c.cp, c.length, lang, voice, &mt, steps,
+                              speed)
+        let gap   = whole.count > 0 ? pause : 0
+        let grown = UnsafeMutablePointer<Float>.allocate(
+            capacity: whole.count + gap + part.count)
+        memcpy(grown, whole.samples, whole.count * MemoryLayout<Float>.size)
+        whole.samples.deallocate()
+        whole.samples = grown
+        fill(whole.samples + whole.count, 0.0, gap)
+        memcpy(whole.samples + whole.count + gap, part.samples,
+               part.count * MemoryLayout<Float>.size)
+        whole.count   += gap + part.count
+        whole.seconds += part.seconds + Float(gap) / Float(sampleRate)
+        tts.used = mark
+    }
+    if whole.count == 0 { fatal("the text is empty") }
+    c.raw.deallocate()
+    c.cp.deallocate()
+    return whole
+}
+
+func recite(_ tts: TTS, _ text: String, _ lang: String, _ voice: Voice,
+            _ seed: UInt32, _ steps: Int, _ speed: Float,
+            _ stream: (UnsafeBufferPointer<Float>) -> Void) -> Int {
+    let pause = Int(chunkSilence * Double(sampleRate))
+    let quiet = floats(tts, pause)
+    let mark  = tts.used
+    var c     = chunkOpen(tts.weights, text, sentenceLimit)
+    var total = 0
+    var mt    = Mt19937()
+    mtSeed(&mt, seed)
+    fill(quiet, 0.0, pause)
+    while chunkNext(&c) {
+        if total > 0 {
+            stream(UnsafeBufferPointer(start: quiet, count: pause))
+            total += pause
+        }
+        let part = synthesize(tts, c.cp, c.length, lang, voice, &mt, steps,
+                              speed)
+        stream(UnsafeBufferPointer(start: part.samples, count: part.count))
+        total += part.count
+        tts.used = mark
+    }
+    c.raw.deallocate()
+    c.cp.deallocate()
+    return total
+}
+
+func refusal(_ tts: TTS, _ name: String, _ lang: String, _ steps: Int,
+             _ speed: Float) -> String? {
+    var why: String? = nil
+    if lang.utf8.count >= 12 {
+        why = "--lang must be under 12 bytes"
+    } else if steps < 1 {
+        why = "--steps must be 1 or more"
+    } else if !(speed > 0.0 && speed < Float.infinity) {
+        why = "--speed must be a positive number"
+    } else if !has(tts.weights, "voice.\(voiceCode(name)).ttl") {
+        why = "--voice names no voice of the pack"
+    }
+    return why
+}
+
+func utter(_ tts: TTS, _ text: String, _ name: String, _ lang: String,
+           _ seed: UInt32, _ steps: Int, _ speed: Float) -> Audio {
+    if let why = refusal(tts, name, lang, steps, speed) { fatal(why) }
+    let mark  = tts.used
+    let voice = voiceOpen(tts, name)
+    let audio = narrate(tts, text, lang, voice, seed, steps, speed)
+    tts.used = mark
+    return audio
+}
+
+func ttsLoad(_ pack: String) -> TTS {
+    return ttsOpen(pack)
+}
+
+func ttsSpeak(_ tts: TTS, _ text: String, _ voice: String, _ lang: String,
+              _ seed: UInt32, _ steps: Int, _ speed: Float) -> [Float] {
+    let audio   = utter(tts, text, voice, lang, seed, steps, speed)
+    let samples = Array(UnsafeBufferPointer(start: audio.samples,
+                                            count: audio.count))
+    audio.samples.deallocate()
+    return samples
+}
+
+func ttsSpeakStream(_ tts: TTS, _ text: String, _ voice: String,
+                    _ lang: String, _ seed: UInt32, _ steps: Int,
+                    _ speed: Float,
+                    _ stream: (UnsafeBufferPointer<Float>) -> Void) -> Int {
+    var total = -1
+    if refusal(tts, voice, lang, steps, speed) == nil {
+        let mark   = tts.used
+        let chosen = voiceOpen(tts, voice)
+        total = recite(tts, text, lang, chosen, seed, steps, speed, stream)
+        tts.used = mark
+    }
+    return total
+}
+
+func ttsRate() -> Int {
+    return sampleRate
+}
+
+func ttsClose(_ tts: TTS) {
+    if !tts.golden.tensors.isEmpty { packClose(&tts.golden) }
+    packClose(&tts.weights)
+    munmap(tts.arena, arenaFloats * MemoryLayout<Float>.size)
+}
+
+#if !NO_MAIN
+
+let moduleNames = ["duration", "text", "field", "vocoder", "other"]
+
 func pcm16(_ sample: Float) -> Int16 {
     let scaled = sample * 2147483648.0
     var value: Int16 = 0
@@ -1665,16 +1811,6 @@ func wave(_ samples: UnsafePointer<Float>, _ count: Int, _ rate: Int,
     }
     bytes = head + Int(data)
     return file
-}
-
-func ttsOpen(_ path: String) -> TTS {
-    let weights = packOpen(path)
-    let bytes   = arenaFloats * MemoryLayout<Float>.size
-    let arena: UnsafeMutableRawPointer = mmap(
-        nil, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
-    if arena == MAP_FAILED { fatal("no memory for the arena") }
-    return TTS(weights,
-               arena.bindMemory(to: Float.self, capacity: arenaFloats))
 }
 
 func waveGate(_ tts: TTS, _ audio: Audio) {
@@ -1729,49 +1865,47 @@ func gate(_ tts: TTS, _ path: String) -> Int {
     return tts.failures
 }
 
-func narrate(_ tts: TTS, _ text: String, _ lang: String, _ voice: Voice,
-             _ seed: UInt32, _ steps: Int, _ speed: Float) -> Audio {
-    let limit = lang == "ko" ? koreanChunkLimit : chunkLimit
-    let pause = Int(chunkSilence * Double(sampleRate))
-    let mark  = tts.used
-    var c     = chunkOpen(tts.weights, text, limit)
-    var whole = Audio(samples: .allocate(capacity: 0), count: 0,
-                      seconds: 0.0)
-    var mt    = Mt19937()
-    mtSeed(&mt, seed)
-    while chunkNext(&c) {
-        let part = synthesize(tts, c.cp, c.length, lang, voice, &mt, steps,
-                              speed)
-        let gap   = whole.count > 0 ? pause : 0
-        let grown = UnsafeMutablePointer<Float>.allocate(
-            capacity: whole.count + gap + part.count)
-        memcpy(grown, whole.samples, whole.count * MemoryLayout<Float>.size)
-        whole.samples.deallocate()
-        whole.samples = grown
-        fill(whole.samples + whole.count, 0.0, gap)
-        memcpy(whole.samples + whole.count + gap, part.samples,
-               part.count * MemoryLayout<Float>.size)
-        whole.count   += gap + part.count
-        whole.seconds += part.seconds + Float(gap) / Float(sampleRate)
-        tts.used = mark
+struct Heard {
+    var audio:   Audio
+    var started: Double
+    var first:   Double
+}
+
+func recorded(_ tts: TTS, _ text: String, _ lang: String, _ name: String,
+              _ seed: UInt32, _ steps: Int, _ speed: Float,
+              _ streamed: Bool) -> Heard {
+    var heard = Heard(audio: Audio(samples: .allocate(capacity: 0),
+                                   count: 0, seconds: 0.0),
+                      started: secondsNow(), first: 0.0)
+    heard.audio.samples.deallocate()
+    if streamed {
+        var samples: [Float] = []
+        if let why = refusal(tts, name, lang, steps, speed) { fatal(why) }
+        _ = ttsSpeakStream(tts, text, name, lang, seed, steps, speed, {
+            part in
+            if samples.isEmpty { heard.first = secondsNow() - heard.started }
+            samples.append(contentsOf: part)
+        })
+        if samples.isEmpty { fatal("the text is empty") }
+        heard.audio = Audio(samples: .allocate(capacity: samples.count),
+                            count: samples.count,
+                            seconds: Float(samples.count) /
+                                     Float(sampleRate))
+        heard.audio.samples.initialize(from: samples, count: samples.count)
+    } else {
+        heard.audio = utter(tts, text, name, lang, seed, steps, speed)
+        heard.first = secondsNow() - heard.started
     }
-    if whole.count == 0 { fatal("the text is empty") }
-    c.raw.deallocate()
-    c.cp.deallocate()
-    return whole
+    return heard
 }
 
 func speak(_ tts: TTS, _ text: String, _ lang: String, _ name: String,
-           _ seed: UInt32, _ steps: Int, _ speed: Float, _ out: String) {
-    if lang.utf8.count >= 12 { fatal("--lang must be under 12 bytes") }
-    if steps < 1 { fatal("--steps must be 1 or more") }
-    if !(speed > 0.0 && speed < Float.infinity) {
-        fatal("--speed must be a positive number")
-    }
-    let started = secondsNow()
-    let voice   = voiceOpen(tts, name)
-    let audio   = narrate(tts, text, lang, voice, seed, steps, speed)
-    let elapsed = secondsNow() - started
+           _ seed: UInt32, _ steps: Int, _ speed: Float, _ out: String,
+           _ streamed: Bool) {
+    let heard   = recorded(tts, text, lang, name, seed, steps, speed,
+                           streamed)
+    let audio   = heard.audio
+    let elapsed = secondsNow() - heard.started
     var bytes   = 0
     let file    = wave(audio.samples, audio.count, sampleRate, &bytes)
     let sink    = fopen(out, "wb")
@@ -1781,9 +1915,9 @@ func speak(_ tts: TTS, _ text: String, _ lang: String, _ name: String,
     fclose(sink)
     file.deallocate()
     audio.samples.deallocate()
-    print(out + String(format: ": audio=%.2fs wall=%.2fs rtf=%.1fx " +
-                       "rate=%ld samples=%ld voice=",
-                       Double(audio.seconds), elapsed,
+    print(out + String(format: ": audio=%.2fs first=%.2fs wall=%.2fs " +
+                       "rtf=%.1fx rate=%ld samples=%ld voice=",
+                       Double(audio.seconds), heard.first, elapsed,
                        Double(audio.seconds) / elapsed, sampleRate,
                        audio.count) + name)
 }
@@ -1841,7 +1975,7 @@ func run(_ arguments: [String]) -> Int32 {
     let command = arguments.count > 1 ? arguments[1] : "help"
     var status: Int32 = 0
     if command == "speak" {
-        let tts = ttsOpen(pack)
+        let tts = ttsLoad(pack)
         if flag(arguments, "--profile") {
             let profile = Profile()
             profile.module  = moduleOther
@@ -1858,10 +1992,12 @@ func run(_ arguments: [String]) -> Int32 {
                          strtoul(option(arguments, "--seed", "0"), nil, 10)),
               strtol(option(arguments, "--steps", "8"), nil, 10),
               Float(strtod(option(arguments, "--speed", "1.05"), nil)),
-              option(arguments, "--out", "tmp/tts.swift.wav"))
+              option(arguments, "--out", "tmp/tts.swift.wav"),
+              flag(arguments, "--stream"))
         if tts.profile != nil { profilePrint(tts) }
+        ttsClose(tts)
     } else if command == "gate" && arguments.count > 2 {
-        let tts = ttsOpen(pack)
+        let tts = ttsLoad(pack)
         var i   = 2
         while i < arguments.count {
             if arguments[i] == "--pack" {
@@ -1871,12 +2007,13 @@ func run(_ arguments: [String]) -> Int32 {
             }
             i += 1
         }
+        ttsClose(tts)
     } else {
         print("tts speak [--text T] [--voice M1] [--lang na] [--seed 0]\n" +
               "          [--steps 8] [--speed 1.05] " +
               "[--out tmp/tts.swift.wav]\n" +
               "          [--pack models/supertonic-fp32.safetensors]\n" +
-              "          [--profile]\n" +
+              "          [--profile] [--stream]\n" +
               "tts gate  [--pack models/supertonic-fp32.safetensors]\n" +
               "          tmp/golden/NAME.safetensors ...")
         status = command != "help" ? 1 : 0
@@ -1884,4 +2021,6 @@ func run(_ arguments: [String]) -> Int32 {
     return status
 }
 
-exit(run(CommandLine.arguments))
+let exited: Never = exit(run(CommandLine.arguments))
+
+#endif
